@@ -20,6 +20,12 @@ export const THEME_LABELS: Record<ThemeKey, string> = {
   force: "Besoin de force, courage",
 };
 
+export const THEME_KEYS = Object.keys(THEME_LABELS) as ThemeKey[];
+
+export function isThemeKey(value: unknown): value is ThemeKey {
+  return typeof value === "string" && (THEME_KEYS as string[]).includes(value);
+}
+
 export const THEME_PHRASE: Record<ThemeKey, string> = {
   tristesse: "Je me sens triste, j'ai le cœur lourd.",
   colere: "Je ressens de la colère en ce moment.",

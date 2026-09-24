@@ -9,7 +9,6 @@ import {
   SEARCH_TERMS,
   THEME_LABELS,
   THEME_PHRASE,
-  matchTheme,
   pickRandomVerse,
   searchCorpus,
   wordsFromFreeText,
@@ -22,8 +21,20 @@ type Message =
   | { kind: "bot-text"; id: string; text: string }
   | { kind: "user"; id: string; text: string }
   | { kind: "choices"; id: string }
-  | { kind: "verse"; id: string; verse: Verse; reflection: string; themeKey: ThemeKey | null; phrase: string }
+  | {
+      kind: "verse";
+      id: string;
+      verse: Verse;
+      reflection: string;
+      themeKey: ThemeKey | null;
+      phrase: string;
+      keywords?: string[];
+    }
   | { kind: "typing"; id: string };
+
+type ConverseResponse =
+  | { action: "ask"; question: string }
+  | { action: "deliver"; themeKey: ThemeKey | null; keywords: string[]; summary: string };
 
 let uid = 0;
 const nextId = () => String(uid++);
@@ -35,6 +46,9 @@ export default function Home() {
   const usedRefs = useRef<Set<string>>(new Set());
   const threadRef = useRef<HTMLDivElement>(null);
   const introDone = useRef(false);
+  // Quand l'IA a posé une question de clarification, on garde le premier message
+  // en attente pour le combiner avec la réponse au tour suivant.
+  const [pendingClarification, setPendingClarification] = useState<string | null>(null);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: "smooth" });
@@ -53,11 +67,11 @@ export default function Home() {
     setMessages(initial);
   }, [bible.loaded, bible.verses]);
 
-  async function handleRequest(themeKey: ThemeKey | null, phrase: string) {
+  async function handleRequest(themeKey: ThemeKey | null, phrase: string, aiKeywords?: string[]) {
     const typingId = nextId();
     setMessages((m) => [...m, { kind: "typing", id: typingId }]);
 
-    let terms: string[] = themeKey ? SEARCH_TERMS[themeKey].slice() : [];
+    let terms: string[] = aiKeywords && aiKeywords.length > 0 ? aiKeywords.slice() : themeKey ? SEARCH_TERMS[themeKey].slice() : [];
     if (terms.length === 0) terms = wordsFromFreeText(phrase);
     if (terms.length === 0) terms = GENERAL_SEARCH;
 
@@ -89,11 +103,12 @@ export default function Home() {
 
     setMessages((m) => [
       ...m.filter((msg) => msg.id !== typingId),
-      { kind: "verse", id: nextId(), verse, reflection: finalReflection, themeKey, phrase },
+      { kind: "verse", id: nextId(), verse, reflection: finalReflection, themeKey, phrase, keywords: aiKeywords },
     ]);
   }
 
   function handleChoice(key: ThemeKey) {
+    setPendingClarification(null);
     setMessages((m) => [
       ...m.filter((msg) => msg.kind !== "choices"),
       { kind: "user", id: nextId(), text: THEME_LABELS[key] },
@@ -102,6 +117,7 @@ export default function Home() {
   }
 
   function askAgain() {
+    setPendingClarification(null);
     setMessages((m) => [
       ...m,
       { kind: "bot-text", id: nextId(), text: "Comment te sens-tu maintenant, ou qu'est-ce qui t'amène ?" },
@@ -109,14 +125,44 @@ export default function Home() {
     ]);
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
     if (!text) return;
     setInput("");
-    setMessages((m) => [...m, { kind: "user", id: nextId(), text }]);
-    const key = matchTheme(text);
-    handleRequest(key, text);
+    setMessages((m) => [...m.filter((msg) => msg.kind !== "choices"), { kind: "user", id: nextId(), text }]);
+
+    const turn = pendingClarification ? 1 : 0;
+    const previous = pendingClarification ?? undefined;
+    const combined = previous ? `${previous} ${text}` : text;
+
+    const typingId = nextId();
+    setMessages((m) => [...m, { kind: "typing", id: typingId }]);
+
+    let decision: ConverseResponse | null = null;
+    try {
+      const resp = await fetch("/api/converse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, previous, turn }),
+      });
+      decision = await resp.json();
+    } catch {
+      decision = null;
+    }
+
+    setMessages((m) => m.filter((msg) => msg.id !== typingId));
+
+    if (decision?.action === "ask" && turn === 0) {
+      setPendingClarification(text);
+      setMessages((m) => [...m, { kind: "bot-text", id: nextId(), text: decision!.question }]);
+      return;
+    }
+
+    setPendingClarification(null);
+    const themeKey = decision?.action === "deliver" ? decision.themeKey : null;
+    const keywords = decision?.action === "deliver" ? decision.keywords : undefined;
+    handleRequest(themeKey, combined, keywords);
   }
 
   return (
@@ -140,7 +186,13 @@ export default function Home() {
 
         <div ref={threadRef} className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 pb-2">
           {messages.map((msg) => (
-            <MessageView key={msg.id} msg={msg} onChoice={handleChoice} onAgain={handleRequest} onRestart={askAgain} />
+            <MessageView
+              key={msg.id}
+              msg={msg}
+              onChoice={handleChoice}
+              onAgain={(themeKey, phrase, keywords) => handleRequest(themeKey, phrase, keywords)}
+              onRestart={askAgain}
+            />
           ))}
         </div>
 
@@ -174,7 +226,7 @@ function MessageView({
 }: {
   msg: Message;
   onChoice: (key: ThemeKey) => void;
-  onAgain: (themeKey: ThemeKey | null, phrase: string) => void;
+  onAgain: (themeKey: ThemeKey | null, phrase: string, keywords?: string[]) => void;
   onRestart: () => void;
 }) {
   if (msg.kind === "bot-text") {
@@ -259,7 +311,7 @@ function MessageView({
       {msg.themeKey !== undefined && (
         <div className="flex gap-3 flex-wrap mt-2">
           <button
-            onClick={() => onAgain(msg.themeKey, msg.phrase)}
+            onClick={() => onAgain(msg.themeKey, msg.phrase, msg.keywords)}
             className="text-[13.5px] underline underline-offset-4"
             style={{ color: "var(--gold-soft)" }}
           >
