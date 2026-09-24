@@ -32,9 +32,17 @@ type Message =
     }
   | { kind: "typing"; id: string };
 
+type HistoryTurn = { role: "user" | "assistant"; text: string };
+
 type ConverseResponse =
   | { action: "ask"; question: string }
-  | { action: "deliver"; themeKey: ThemeKey | null; keywords: string[]; summary: string };
+  | {
+      action: "conclude";
+      themeKey: ThemeKey | null;
+      keywords: string[];
+      summary: string;
+      closing: string;
+    };
 
 let uid = 0;
 const nextId = () => String(uid++);
@@ -46,9 +54,13 @@ export default function Home() {
   const usedRefs = useRef<Set<string>>(new Set());
   const threadRef = useRef<HTMLDivElement>(null);
   const introDone = useRef(false);
-  // Quand l'IA a posé une question de clarification, on garde le premier message
-  // en attente pour le combiner avec la réponse au tour suivant.
-  const [pendingClarification, setPendingClarification] = useState<string | null>(null);
+  // Historique complet de l'échange en cours, envoyé à /api/converse
+  // pour permettre une vraie discussion à plusieurs tours.
+  const conversation = useRef<HistoryTurn[]>([]);
+  // Tant qu'on est en pleine discussion (au moins un échange), on propose
+  // un raccourci pour conclure immédiatement.
+  const [inConversation, setInConversation] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: "smooth" });
@@ -67,7 +79,7 @@ export default function Home() {
     setMessages(initial);
   }, [bible.loaded, bible.verses]);
 
-  async function handleRequest(themeKey: ThemeKey | null, phrase: string, aiKeywords?: string[]) {
+  async function deliverVerse(themeKey: ThemeKey | null, phrase: string, aiKeywords?: string[]) {
     const typingId = nextId();
     setMessages((m) => [...m, { kind: "typing", id: typingId }]);
 
@@ -108,16 +120,18 @@ export default function Home() {
   }
 
   function handleChoice(key: ThemeKey) {
-    setPendingClarification(null);
+    conversation.current = [];
+    setInConversation(false);
     setMessages((m) => [
       ...m.filter((msg) => msg.kind !== "choices"),
       { kind: "user", id: nextId(), text: THEME_LABELS[key] },
     ]);
-    handleRequest(key, THEME_PHRASE[key]);
+    deliverVerse(key, THEME_PHRASE[key]);
   }
 
   function askAgain() {
-    setPendingClarification(null);
+    conversation.current = [];
+    setInConversation(false);
     setMessages((m) => [
       ...m,
       { kind: "bot-text", id: nextId(), text: "Comment te sens-tu maintenant, ou qu'est-ce qui t'amène ?" },
@@ -125,17 +139,8 @@ export default function Home() {
     ]);
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text) return;
-    setInput("");
-    setMessages((m) => [...m.filter((msg) => msg.kind !== "choices"), { kind: "user", id: nextId(), text }]);
-
-    const turn = pendingClarification ? 1 : 0;
-    const previous = pendingClarification ?? undefined;
-    const combined = previous ? `${previous} ${text}` : text;
-
+  async function runConverse(forceConclude: boolean) {
+    setBusy(true);
     const typingId = nextId();
     setMessages((m) => [...m, { kind: "typing", id: typingId }]);
 
@@ -144,7 +149,7 @@ export default function Home() {
       const resp = await fetch("/api/converse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, previous, turn }),
+        body: JSON.stringify({ history: conversation.current, forceConclude }),
       });
       decision = await resp.json();
     } catch {
@@ -152,17 +157,50 @@ export default function Home() {
     }
 
     setMessages((m) => m.filter((msg) => msg.id !== typingId));
+    setBusy(false);
 
-    if (decision?.action === "ask" && turn === 0) {
-      setPendingClarification(text);
+    if (decision?.action === "ask") {
+      conversation.current = [...conversation.current, { role: "assistant", text: decision.question }];
       setMessages((m) => [...m, { kind: "bot-text", id: nextId(), text: decision!.question }]);
       return;
     }
 
-    setPendingClarification(null);
-    const themeKey = decision?.action === "deliver" ? decision.themeKey : null;
-    const keywords = decision?.action === "deliver" ? decision.keywords : undefined;
-    handleRequest(themeKey, combined, keywords);
+    // conclude (ou fallback réseau)
+    setInConversation(false);
+    const summary =
+      decision?.action === "conclude"
+        ? decision.summary
+        : conversation.current
+            .filter((h) => h.role === "user")
+            .map((h) => h.text)
+            .join(" ");
+    const themeKey = decision?.action === "conclude" ? decision.themeKey : null;
+    const keywords = decision?.action === "conclude" ? decision.keywords : undefined;
+    const closing =
+      decision?.action === "conclude"
+        ? decision.closing
+        : "Merci de m'avoir partagé tout ça. Voici un verset qui pourrait t'accompagner.";
+
+    conversation.current = [];
+    setMessages((m) => [...m, { kind: "bot-text", id: nextId(), text: closing }]);
+    deliverVerse(themeKey, summary, keywords);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    setInConversation(true);
+    conversation.current = [...conversation.current, { role: "user", text }];
+    setMessages((m) => [...m.filter((msg) => msg.kind !== "choices"), { kind: "user", id: nextId(), text }]);
+    await runConverse(false);
+  }
+
+  async function handleConcludeNow() {
+    if (busy || conversation.current.length === 0) return;
+    setMessages((m) => m.filter((msg) => msg.kind !== "choices"));
+    await runConverse(true);
   }
 
   return (
@@ -190,11 +228,24 @@ export default function Home() {
               key={msg.id}
               msg={msg}
               onChoice={handleChoice}
-              onAgain={(themeKey, phrase, keywords) => handleRequest(themeKey, phrase, keywords)}
+              onAgain={(themeKey, phrase, keywords) => deliverVerse(themeKey, phrase, keywords)}
               onRestart={askAgain}
             />
           ))}
         </div>
+
+        {inConversation && (
+          <div className="flex-none flex justify-center pt-2">
+            <button
+              onClick={handleConcludeNow}
+              disabled={busy}
+              className="text-[12.5px] underline underline-offset-4 disabled:opacity-50"
+              style={{ color: "#b8ac93" }}
+            >
+              Je veux mon verset maintenant
+            </button>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="flex-none flex gap-2 mt-3 pt-4 border-t" style={{ borderColor: "var(--line)" }}>
           <input
@@ -207,7 +258,8 @@ export default function Home() {
           />
           <button
             type="submit"
-            className="rounded-full px-5 text-[13.5px] font-semibold"
+            disabled={busy}
+            className="rounded-full px-5 text-[13.5px] font-semibold disabled:opacity-50"
             style={{ background: "var(--gold)", color: "var(--ink)" }}
           >
             Envoyer

@@ -76,6 +76,26 @@ export const FALLBACK_REFLECTION: Record<ThemeKey, string> = {
 
 export const GENERAL_SEARCH = ["refuge", "paix", "secours", "confie", "esperance", "force", "bonte", "fidelite"];
 
+// Pratiques suggérées en clôture d'échange, quand l'IA n'est pas disponible.
+export const FALLBACK_PRACTICE: Record<ThemeKey, string> = {
+  tristesse: "Prends un moment ce soir pour relire ce verset lentement, et confie ta tristesse avant de dormir.",
+  colere: "Avant de dormir, respire, relis ce verset, et dépose ce qui pèse au lieu de le porter seul.",
+  anxiete: "Médite sur ce verset avant de te coucher, et confie tes inquiétudes plutôt que de les ressasser.",
+  decision: "Relis ce verset ce soir et laisse-le éclairer calmement ton prochain pas, sans tout décider maintenant.",
+  pardon: "Prends un instant ce soir pour méditer et prier avec ce verset, et déposer ce que tu portes.",
+  fatigue: "Ce soir, laisse-toi vraiment reposer. Relis ce verset avant de dormir comme une permission de souffler.",
+  solitude: "Avant de dormir, médite sur ce verset et rappelle-toi que tu n'es pas seul, même en silence.",
+  decouragement: "Relis ce verset ce soir, prie-le simplement, et laisse-toi porter jusqu'à demain.",
+  deuil: "Prends ce verset ce soir comme une présence. Médite dessus doucement avant de dormir.",
+  doute: "Relis ce verset ce soir sans chercher à tout résoudre. Laisse-le simplement t'accompagner.",
+  finances: "Médite sur ce verset avant de dormir, et confie ce souci plutôt que de le porter seul cette nuit.",
+  gratitude: "Ce soir, relis ce verset comme une prière de reconnaissance avant de dormir.",
+  force: "Avant de dormir, médite et prie avec ce verset, pour puiser de la force pour demain.",
+};
+
+export const GENERIC_PRACTICE =
+  "Prends un moment avant de dormir pour méditer et prier sur ce verset, et confier ce que tu portes.";
+
 const STOPWORDS = new Set([
   "je","tu","il","elle","on","nous","vous","ils","elles","suis","es","est","sommes","etes","sont",
   "de","des","du","le","la","les","un","une","et","a","au","aux","avec","pour","que","qui","ne","pas",
